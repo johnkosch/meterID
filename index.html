@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What’s the Meter?</title>
+  <script src="https://www.verovio.org/javascript/latest/verovio-toolkit-wasm.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1050px;
+      margin: 0 auto;
+      padding: 28px 20px;
+      text-align: center;
+      background: #f7f7f7;
+    }
+    h1 { margin: 0 0 10px; }
+    #instructions {
+      margin: 0 auto 14px;
+      font-size: 1.1rem;
+      max-width: 760px;
+      line-height: 1.45;
+    }
+    .voiceover-controls {
+      display: flex; align-items: center; justify-content: center;
+      gap: 12px; margin: 0 auto 14px; flex-wrap: wrap;
+    }
+    .voiceover-controls label { font-weight: 600; }
+    .voiceover-controls button { padding: 7px 12px; font: inherit; cursor: pointer; }
+    button:focus-visible, select:focus-visible { outline: 3px solid #000; outline-offset: 3px; }
+    #voiceoverStatus {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+    }
+    #modeRow {
+      margin: 12px 0 16px;
+      font-size: 1rem;
+    }
+    select {
+      font-size: 1rem;
+      padding: 7px 10px;
+      border-radius: 7px;
+      border: 1px solid #888;
+      background: white;
+    }
+    #score {
+      background: white;
+      border-radius: 10px;
+      padding: 12px 20px;
+      margin: 16px auto;
+      height: 250px;
+      box-sizing: border-box;
+      box-shadow: 0 2px 8px rgba(0,0,0,.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    #score svg {
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: 230px;
+      flex: 0 1 auto;
+    }
+    #prompt {
+      font-weight: bold;
+      font-size: 1.15rem;
+      margin: 12px 0 10px;
+    }
+    .answer-entry {
+      display: flex; justify-content: center; gap: 10px;
+      flex-wrap: wrap; margin: 12px auto 10px;
+    }
+    #meterAnswer {
+      width: 220px; max-width: 70vw; padding: 12px 14px;
+      border: 2px solid #333; border-radius: 8px;
+      font-size: 1.2rem; text-align: center; background: white;
+    }
+    #submitAnswerButton {
+      padding: 12px 20px; border: 0; border-radius: 8px;
+      background: #2e9b57; color: white; font-size: 1.05rem;
+      font-weight: bold; cursor: pointer;
+    }
+    #submitAnswerButton:disabled, #meterAnswer:disabled { opacity: .65; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+    }
+    #feedback {
+      font-size: 1.15rem;
+      font-weight: bold;
+      min-height: 30px;
+      margin: 12px;
+    }
+    #nextButton {
+      font-size: 1.05rem;
+      padding: 11px 27px;
+      border: none;
+      border-radius: 8px;
+      background: #2e9b57;
+      color: white;
+      cursor: pointer;
+    }
+    #nextButton:hover { background: #267e46; }
+    #scoreNote {
+      font-size: .92rem;
+      color: #555;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>What’s the Meter?</h1>
+
+  <div class="voiceover-controls" id="voiceoverControls">
+    <label for="voiceoverToggle"><input type="checkbox" id="voiceoverToggle" checked> Voiceover</label>
+    <button type="button" id="repeatPromptButton">Repeat prompt</button>
+  </div>
+  <div id="voiceoverStatus" aria-live="polite"></div>
+
+  <div id="instructions">
+    Study the rhythm carefully. There is <strong>no time signature</strong>.
+    Use the note values, rests, and <strong>beaming</strong> to determine the meter.
+  </div>
+
+  <div id="modeRow">
+    Practice:
+    <select id="modeSelect" aria-label="Practice mode">
+      <option value="all">All meters</option>
+      <option value="simple">Simple meter (2/4, 3/4, 4/4)</option>
+      <option value="compound">Compound meter (6/8, 9/8, 12/8)</option>
+      <option value="irregular">Irregular meter (5/8, 7/8, 5/4, 7/4)</option>
+    </select>
+  </div>
+
+  <div id="score" aria-label="Rhythm to identify"></div>
+
+  <div id="prompt">Type the appropriate time signature:</div>
+  <form class="answer-entry" id="answerForm">
+    <label for="meterAnswer" class="sr-only">Time signature</label>
+    <input id="meterAnswer" type="text" autocomplete="off" autocapitalize="off"
+      spellcheck="false" aria-label="Time signature answer" disabled>
+    <button id="submitAnswerButton" type="submit" disabled>Submit</button>
+  </form>
+
+  <div id="feedback"></div>
+  <button id="nextButton">Next</button>
+
+  <div id="scoreNote">
+    Beams are intentionally used to show the intended metric groupings.
+  </div>
+
+<script>
+let vrvToolkit;
+let currentExercise = null;
+let answered = false;
+let previousSignature = null;
+
+function randomChoice(array) {
+  return array[Math.floor(Math.random() * array.length)];
+}
+
+/* ============================================================
+   RHYTHM BUILDING BLOCKS
+   These are adapted from the earlier rhythm-completion apps:
+   simple-meter one-beat patterns, compound six-eighth-note
+   patterns, and irregular 2+3 / 3+2 and 2+2+3 groupings.
+   ============================================================ */
+
+const R = {
+  q:  { name:"quarter", pulses:4, mei:'<note pname="c" oct="4" dur="4"/>' },
+  qr: { name:"quarterRest", pulses:4, mei:'<rest dur="4"/>' },
+  e:  { name:"eighth", pulses:2, mei:'<note pname="c" oct="4" dur="8"/>' },
+  er: { name:"eighthRest", pulses:2, mei:'<rest dur="8"/>' },
+  s:  { name:"sixteenth", pulses:1, mei:'<note pname="c" oct="4" dur="16"/>' },
+  dQ: { name:"dottedQuarter", pulses:6, mei:'<note pname="c" oct="4" dur="4" dots="1"/>' },
+  dE: { name:"dottedEighth", pulses:3, mei:'<note pname="c" oct="4" dur="8" dots="1"/>' },
+  dQr:{ name:"dottedQuarterRest", pulses:6, mei:'<rest dur="4" dots="1"/>' }
+};
+
+/* Simple-meter one-beat patterns. */
+const simpleBeatPatterns = [
+  [R.q],
+  [R.qr],
+  [R.e, R.e],
+  [R.e, R.er],
+  [R.er, R.e]
+];
+
+/* A few two-beat patterns are useful because they preserve
+   metric boundaries before rendering. */
+function simpleMeasure(beats) {
+  const result = [];
+  for (let i = 0; i < beats; i++) {
+    result.push(randomChoice(simpleBeatPatterns));
+  }
+  /* Avoid a completely silent measure. */
+  if (result.every(b => b[0] === R.qr || b[0] === R.er)) return simpleMeasure(beats);
+  return result;
+}
+
+/* Compound beat = one dotted-quarter beat (6 eighth-pulses).
+   These are adapted from the compound app's rhythm vocabulary. */
+const compoundBeatPatterns = [
+  [R.dQ],
+  [R.dQr],
+  [R.q, R.er],
+  [R.er, R.q],
+  [R.qr, R.e],
+  [R.e, R.q],
+  [R.er, R.e, R.e],
+  [R.e, R.e, R.er],
+  [R.s, R.s, R.q],
+  [R.q, R.s, R.s],
+  [R.dE, R.s, R.e],
+  [R.e, R.dE, R.s],
+  [R.s, R.dE, R.e],
+  [R.s, R.s, R.e, R.e],
+  [R.e, R.s, R.s, R.e],
+  [R.e, R.s, R.s, R.s, R.s],
+  [R.s, R.s, R.e, R.s, R.s],
+  [R.s, R.s, R.s, R.s, R.s, R.s]
+];
+
+function compoundMeasure(beats) {
+  const result = [];
+  for (let i = 0; i < beats; i++) result.push(randomChoice(compoundBeatPatterns));
+  if (result.every(b => b.length === 1 && b[0] === R.dQr)) return compoundMeasure(beats);
+  return result;
+}
+
+/* Irregular groups are expressed as 2 or 3 eighth-pulses.
+   A group of 2 can be a pair of eighths (or an eighth/rest pair);
+   a group of 3 can be a dotted-quarter or three eighth-pulses.
+   Explicit group boundaries become explicit beams. */
+const irregularGroup2 = [
+  [R.e, R.e],
+  [R.e, R.er],
+  [R.er, R.e]
+];
+
+const irregularGroup3 = [
+  [R.dQ],
+  [R.dQr],
+  [R.e, R.e, R.e],
+  [R.e, R.e, R.er],
+  [R.e, R.er, R.e],
+  [R.er, R.e, R.e],
+  [R.s, R.s, R.e],
+  [R.e, R.s, R.s]
+];
+
+const irregularGroup4 = [
+  [R.q],
+  [R.qr],
+  [R.e, R.e, R.e, R.e],
+  [R.q, R.er, R.e],
+  [R.e, R.q, R.e],
+  [R.e, R.er, R.q]
+];
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+
+/* Beam only notes within a metric group. Rests break beams,
+   matching the earlier apps' treatment. */
+function groupToMEI(group) {
+  let output = "";
+  let beam = [];
+
+  function flush() {
+    if (beam.length >= 2) output += "<beam>" + beam.join("") + "</beam>";
+    else output += beam.join("");
+    beam = [];
+  }
+
+  for (const item of group) {
+    const isNote = item.mei.startsWith("<note");
+    const short = item.name === "eighth" ||
+                  item.name === "sixteenth" ||
+                  item.name === "dottedEighth";
+
+    if (isNote && short) {
+      beam.push(item.mei);
+    } else {
+      flush();
+      output += item.mei;
+    }
+  }
+  flush();
+  return output;
+}
+
+/* A space between metric groups gives Verovio an explicit
+   rhythmic boundary while remaining invisible in the score. */
+function groupsToMEI(groups) {
+  return groups.map(group => groupToMEI(group)).join('<space dur="0"/>');
+}
+
+function makeScoreMEI(exercise) {
+  return `
+  <mei xmlns="http://www.music-encoding.org/ns/mei">
+    <music>
+      <body>
+        <mdiv>
+          <score>
+            <scoreDef>
+              <staffGrp>
+                <staffDef n="1" lines="5" clef.shape="G" clef.line="2"/>
+              </staffGrp>
+            </scoreDef>
+            <section>
+              <measure n="1">
+                <staff n="1">
+                  <layer n="1">
+                    ${groupsToMEI(exercise.groups)}
+                  </layer>
+                </staff>
+              </measure>
+            </section>
+          </score>
+        </mdiv>
+      </body>
+    </music>
+  </mei>`;
+}
+
+function renderExercise(exercise) {
+  vrvToolkit.setOptions({
+    scale: 70,
+    adjustPageHeight: true,
+    pageWidth: 1900,
+    pageHeight: 850,
+    breaks: "none",
+    footer: "none",
+    header: "none",
+    spacingLinear: 1.1,
+    spacingNonLinear: 1.1
+  });
+
+  const svg = vrvToolkit.renderData(makeScoreMEI(exercise), {});
+  document.getElementById("score").innerHTML = svg;
+}
+
+/* ============================================================
+   EXERCISE GENERATION
+   ============================================================ */
+
+const meterPools = {
+  simple: ["2/4", "3/4", "4/4"],
+  compound: ["6/8", "9/8", "12/8"],
+  irregular: ["5/8", "7/8", "5/4", "7/4"],
+  all: ["2/4", "3/4", "4/4", "6/8", "9/8", "12/8",
+        "5/8", "7/8", "5/4", "7/4"]
+};
+
+function buildForMeter(meter) {
+  switch (meter) {
+    case "2/4":
+      return { meter, groups: simpleMeasure(2) };
+
+    case "3/4":
+      return { meter, groups: simpleMeasure(3) };
+
+    case "4/4":
+      return { meter, groups: simpleMeasure(4) };
+
+    case "6/8":
+      return { meter, groups: compoundMeasure(2) };
+
+    case "9/8":
+      return { meter, groups: compoundMeasure(3) };
+
+    case "12/8":
+      return { meter, groups: compoundMeasure(4) };
+
+    case "5/8": {
+      const groups = Math.random() < .5
+        ? [randomChoice(irregularGroup2), randomChoice(irregularGroup3)]
+        : [randomChoice(irregularGroup3), randomChoice(irregularGroup2)];
+      return { meter, groups };
+    }
+
+    case "7/8": {
+      const forms = [
+        [2,2,3], [2,3,2], [3,2,2]
+      ];
+      const form = randomChoice(forms);
+      return {
+        meter,
+        groups: form.map(n =>
+          n === 2 ? randomChoice(irregularGroup2) :
+          randomChoice(irregularGroup3)
+        )
+      };
+    }
+
+    case "5/4": {
+      /* Five quarter-note pulses. The internal grouping is
+         shown by the note/rest values rather than an overt
+         time signature. */
+      return { meter, groups: simpleMeasure(5) };
+    }
+
+    case "7/4":
+      return { meter, groups: simpleMeasure(7) };
+  }
+}
+
+/* Reject patterns that would be too ambiguous for a meter
+   identification exercise. For simple meters, require at
+   least one short-note group or a rest; for compound and
+   irregular meters, the explicit grouping is sufficient. */
+function isGoodExercise(ex) {
+  const all = ex.groups.flat();
+
+  if (all.every(x => x.name === "quarter")) return false;
+
+  if (ex.meter === "5/4" || ex.meter === "7/4") {
+    /* Don't make these indistinguishable from a different
+       quarter-note-based meter by using only identical quarters. */
+    return all.some(x => x.name !== "quarter");
+  }
+
+  return true;
+}
+
+function exerciseSignature(ex) {
+  return ex.meter + ":" + ex.groups.map(g =>
+    g.map(x => x.name).join("+")
+  ).join("|");
+}
+
+function generateExercise() {
+  const mode = document.getElementById("modeSelect").value;
+  let ex, sig;
+  let attempts = 0;
+
+  do {
+    const meter = randomChoice(meterPools[mode]);
+    ex = buildForMeter(meter);
+    sig = exerciseSignature(ex);
+    attempts++;
+  } while ((!isGoodExercise(ex) || sig === previousSignature) && attempts < 100);
+
+  previousSignature = sig;
+  return ex;
+}
+
+/* ============================================================
+   ANSWER BUTTONS
+   ============================================================ */
+
+function updateAnswerButtons() {
+  const mode = document.getElementById("modeSelect").value;
+  const meters = meterPools[mode];
+  const container = document.getElementById("answerButtons");
+
+  container.innerHTML = "";
+  meters.forEach(meter => {
+    const button = document.createElement("button");
+    button.className = "answer-button";
+    button.textContent = meter;
+    button.dataset.meter = meter;
+    button.setAttribute("aria-label", meter.replace("/", " over "));
+    button.addEventListener("focus", () => speak(meter.replace("/", " over ")));
+    button.addEventListener("mouseenter", () => speak(meter.replace("/", " over ")));
+    button.addEventListener("click", () => checkAnswer(meter));
+    container.appendChild(button);
+  });
+}
+
+// Voiceover and keyboard-accessible text entry.
+const voiceoverToggle = document.getElementById("voiceoverToggle");
+const voiceoverStatus = document.getElementById("voiceoverStatus");
+const repeatPromptButton = document.getElementById("repeatPromptButton");
+const meterAnswer = document.getElementById("meterAnswer");
+const submitAnswerButton = document.getElementById("submitAnswerButton");
+let startupStage = "intro";
+
+function speak(text, onFinished) {
+  if (!voiceoverToggle || !voiceoverToggle.checked) return null;
+  if (!("speechSynthesis" in window)) {
+    voiceoverStatus.textContent = "Voiceover is not available in this browser.";
+    return null;
+  }
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "en-US";
+  utterance.rate = 0.95;
+  utterance.pitch = 1;
+  if (typeof onFinished === "function") {
+    utterance.onend = onFinished;
+    utterance.onerror = onFinished;
+  }
+  window.speechSynthesis.speak(utterance);
+  return utterance;
+}
+
+function itemSpeechName(item) {
+  const names = {
+    quarter:"quarter note", quarterRest:"quarter rest",
+    eighth:"eighth note", eighthRest:"eighth rest",
+    sixteenth:"sixteenth note", dottedQuarter:"dotted quarter note",
+    dottedEighth:"dotted eighth note", dottedQuarterRest:"dotted quarter rest"
+  };
+  return names[item.name] || item.name || "rhythmic value";
+}
+function numberWord(n) {
+  return ({2:"two",3:"three",4:"four",5:"five",6:"six",7:"seven",8:"eight",9:"nine",10:"ten",11:"eleven",12:"twelve"})[n] || String(n);
+}
+function rhythmForSpeech(exercise) {
+  if (!exercise || !exercise.groups) return "";
+  const groups = [];
+  for (const item of exercise.groups.flat()) {
+    const name = itemSpeechName(item), last = groups[groups.length - 1];
+    if (last && last.name === name) last.count++;
+    else groups.push({name, count:1});
+  }
+  return groups.map(g => g.count === 1 ? "a " + g.name :
+    numberWord(g.count) + " " + g.name.replace(/ note$/, " notes").replace(/ rest$/, " rests")
+  ).join(", ");
+}
+function currentPromptSpeech() {
+  const rhythm = rhythmForSpeech(currentExercise);
+  return rhythm ? "The rhythm is " + rhythm + "." : "Enter the time signature for the rhythm.";
+}
+function speakPrompt() {
+  const text = currentPromptSpeech();
+  voiceoverStatus.textContent = text;
+  speak(text);
+}
+function sayStartupPrompt() {
+  if (startupStage === "intro" || startupStage === "await-enter") {
+    speak("Press I for instructions. Otherwise, press Enter to begin.");
+  } else if (startupStage === "instructions") {
+    speak("Type the appropriate time signature for the given rhythm. Hit the spacebar to repeat the prompt. Press I to repeat the instructions, otherwise, press Enter to begin.");
+  } else {
+    speakPrompt();
+  }
+}
+
+function normalizeAnswer(value) {
+  return value.toLowerCase()
+    .replace(/\b(two|three|four|five|six|seven|eight|nine|ten|twelve)\b/g, word => ({
+      two:"2", three:"3", four:"4", five:"5", six:"6", seven:"7",
+      eight:"8", nine:"9", ten:"10", twelve:"12"
+    })[word])
+    .replace(/and/g, "")
+    .replace(/[\s\/-]/g, "");
+}
+function answerIsCorrect(value, expected) {
+  return normalizeAnswer(value) === normalizeAnswer(expected);
+}
+
+function beginExercise() {
+  startupStage = "exercise";
+  document.getElementById("modeSelect").disabled = false;
+  newExercise();
+  meterAnswer.disabled = false;
+  submitAnswerButton.disabled = false;
+  meterAnswer.value = "";
+  meterAnswer.focus();
+}
+
+repeatPromptButton.addEventListener("click", sayStartupPrompt);
+voiceoverToggle.addEventListener("change", () => {
+  if (voiceoverToggle.checked) sayStartupPrompt();
+  else if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+});
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") {
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    return;
+  }
+  if (event.key.toLowerCase() === "i" &&
+      (event.target === document.body || event.target === meterAnswer)) {
+    event.preventDefault();
+    if (startupStage !== "exercise") {
+      startupStage = "instructions";
+      sayStartupPrompt();
+    } else {
+      speak("Type the appropriate time signature for the given rhythm. Hit the spacebar to repeat the prompt. Press I to repeat these instructions.");
+    }
+    return;
+  }
+  if (event.code === "Space" && startupStage === "exercise" &&
+      (event.target === document.body ||
+       (event.target === meterAnswer && meterAnswer.value.length === 0))) {
+    event.preventDefault();
+    speakPrompt();
+    return;
+  }
+  if (event.key === "Enter" && startupStage !== "exercise") {
+    event.preventDefault();
+    if (startupStage === "intro") {
+      startupStage = "await-enter";
+      speak("Press I for instructions. Otherwise, press Enter to begin.");
+    } else {
+      beginExercise();
+    }
+  }
+});
+
+document.getElementById("answerForm").addEventListener("submit", event => {
+  event.preventDefault();
+  if (!answered && startupStage === "exercise") checkAnswer(meterAnswer.value);
+});
+
+function newExercise() {
+  answered = false;
+  document.getElementById("feedback").textContent = "";
+  document.getElementById("nextButton").disabled = true;
+  meterAnswer.value = "";
+  meterAnswer.disabled = false;
+  submitAnswerButton.disabled = false;
+  currentExercise = generateExercise();
+  renderExercise(currentExercise);
+  if (startupStage === "exercise") speakPrompt();
+}
+
+function checkAnswer(answer) {
+  if (answered) return;
+  answered = true;
+  const correct = answerIsCorrect(answer, currentExercise.meter);
+  meterAnswer.disabled = true;
+  submitAnswerButton.disabled = true;
+  const feedback = document.getElementById("feedback");
+  feedback.textContent = correct ? "Correct!" :
+    `Not quite — the correct answer is ${currentExercise.meter.replace("/", "-")}.`;
+  document.getElementById("nextButton").disabled = false;
+  // Wait until the complete feedback utterance finishes before generating the
+  // next prompt, so the next prompt cannot cancel the spoken correct answer.
+  let advanced = false;
+  const advance = () => {
+    if (advanced) return;
+    advanced = true;
+    if (startupStage === "exercise") {
+      newExercise();
+      meterAnswer.focus();
+    }
+  };
+  const utterance = speak(correct ? "Correct." :
+    "Not quite. The correct answer is " + spokenMeter(currentExercise.meter) + ".", advance);
+  // If voiceover is off or unavailable, continue after a brief visual-feedback pause.
+  if (!utterance) window.setTimeout(advance, correct ? 900 : 2200);
+}
+
+function spokenMeter(meter) {
+  const parts = meter.split("/");
+  const words = {
+    "2":"two", "3":"three", "4":"four", "5":"five", "6":"six",
+    "7":"seven", "8":"eight", "9":"nine", "10":"ten", "12":"twelve"
+  };
+  return parts.map(part => words[part] || part).join("-");
+}
+
+document.getElementById("modeSelect").addEventListener("change", () => {
+  previousSignature = null;
+  if (startupStage === "exercise") newExercise();
+});
+
+document.getElementById("nextButton").addEventListener("click", () => {
+  if (startupStage === "exercise") {
+    newExercise();
+    meterAnswer.focus();
+  }
+});
+
+document.getElementById("nextButton").addEventListener("focus", () => speak("Next"));
+document.getElementById("nextButton").addEventListener("mouseenter", () => speak("Next"));
+
+verovio.module.onRuntimeInitialized = function () {
+  vrvToolkit = new verovio.toolkit();
+  currentExercise = generateExercise();
+  renderExercise(currentExercise);
+  meterAnswer.disabled = true;
+  submitAnswerButton.disabled = true;
+  document.getElementById("nextButton").disabled = true;
+  document.getElementById("modeSelect").disabled = true;
+};
+</script>
+</body>
+</html>
